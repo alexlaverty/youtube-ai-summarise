@@ -242,13 +242,14 @@ Detailed Key Points Extraction:"""
         print(f"Detailed Gemini Error Traceback for '{video_title}':\n{traceback.format_exc()}", file=sys.stderr)
         raise RuntimeError(f"Failed to generate details using Gemini API for '{video_title}': An unexpected error occurred: {e}")
 
-def save_output(filepath: str, title: str, key_points: str, url: str):
-    """Appends the video title, URL, and key points to the specified file."""
+def save_output(filepath: str, title: str, key_points: str, url: str, engine: str):
+    """Appends the video title, URL, key points, and engine used to the specified file."""
     try:
         with open(filepath, 'a', encoding='utf-8') as f:
             f.write(f"--- Video Start ---\n")
             f.write(f"Title: {title}\n")
-            f.write(f"URL: {url}\n\n")
+            f.write(f"URL: {url}\n")
+            f.write(f"Engine: {engine}\n\n")
             f.write("Key Points:\n")
             f.write(f"{key_points}\n")
             f.write(f"--- Video End ---\n\n")
