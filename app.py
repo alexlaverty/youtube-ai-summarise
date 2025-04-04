@@ -176,8 +176,15 @@ def generate_key_points_with_ollama(
         if "message" in data and "content" in data["message"]:
             key_points = data["message"]["content"].strip()
             if not key_points:
-                 return "Ollama returned an empty response."
-            #print(f"Successfully generated key points for '{video_title}'.")
+                return "Ollama returned an empty response."
+
+            print(f"Successfully generated key points for '{video_title}':\n")
+
+            # Split the key points into lines and print each as a formatted list
+            for i, line in enumerate(key_points.split("\n"), start=1):
+                if line.strip():  # Skip empty lines
+                    print(f"{line.strip()}")
+
             return key_points
         elif "error" in data:
              raise RuntimeError(f"Ollama API returned an error for '{video_title}': {data['error']}")
