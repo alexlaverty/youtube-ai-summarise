@@ -1,55 +1,105 @@
-# YouTube Subtitle AI Summarise
+# YouTube Video Summarizer using Ollama
 
-This repository provides a Python script to extract subtitles from a YouTube video and summarize the main key points using a local AI model powered by Ollama. It's a simple and efficient way to quickly understand the content of a video without watching it in full.
+This Python script extracts subtitles from a YouTube video or an entire playlist, sends the transcript to a locally running Ollama instance, and generates a bulleted list of key points, saving the results to a text file.
 
-## How to Run
+## Features
 
-1. [Install Ollama, download a model and serve it.](https://ollama.com/)
+*   Processes single YouTube videos or entire playlists.
+*   Automatically fetches available subtitles (prioritizes English by default).
+*   Cleans subtitle text by removing timestamps and annotations.
+*   Uses a local Ollama instance for generating summaries (key points).
+*   Configurable Ollama model, API endpoint, and subtitle language preference.
+*   Appends results (Title, URL, Key Points) to a specified output file.
+*   Includes basic error handling and progress reporting.
 
-2. Install the required dependencies:
+## Prerequisites
+
+*   **Python 3.x:** Ensure you have Python installed.
+*   **Ollama:** You need a running Ollama instance accessible from where you run the script. Download and install it from [https://ollama.com/](https://ollama.com/). Make sure the desired model (default: `codeqwen:latest`) is pulled (`ollama pull codeqwen:latest`).
+*   **Required Python Libraries:** Install the necessary libraries using pip.
+
+## Installation
+
+1.  **Clone the repository (or download the script):**
+    ```bash
+    # If you have a git repo setup
+    # git clone <your-repo-url>
+    # cd <your-repo-directory>
+
+    # Or just ensure you have app.py and requirements.txt
+    ```
+
+2.  **Install dependencies:**
+    Create a `requirements.txt` file with the following content if you don't have one:
+    ```txt
+    requests
+    pytubefix
+    ```
+    Then run:
+    ```bash
+    pip install -r requirements.txt
+    ```
+    *(Note: If you don't have a `requirements.txt` file, you can install them directly: `pip install requests pytubefix`)*
+
+## Configuration
+
+The script uses the following defaults, which can be overridden via command-line arguments:
+
+*   **Ollama API URL:** `http://localhost:11434/api/chat` (change with `--ollama-url`)
+*   **Ollama Model:** `codeqwen:latest` (change with `--model`) - *Make sure this model is available in your Ollama instance!*
+*   **Subtitle Language Preference:** `['en', 'a.en']` (English, Auto-generated English) (change with `--lang`)
+*   **Output File:** `output.txt` (change with `--output-file`)
+
+## Usage
+
+Make sure your Ollama instance is running before executing the script.
+
+**Command-line arguments:**
+
+*   `-u URL` or `--url URL`: Process a single YouTube video URL.
+*   `-p URL` or `--playlist URL`: Process all videos in a YouTube playlist URL.
+*   `-o FILE` or `--output-file FILE`: Specify the output file path (default: `output.txt`).
+*   `-m MODEL` or `--model MODEL`: Specify the Ollama model name (default: `codeqwen:latest`).
+*   `--ollama-url URL`: Specify the Ollama API endpoint URL (default: `http://localhost:11434/api/chat`).
+*   `-l LANG [LANG ...]` or `--lang LANG [LANG ...]`: Specify preferred subtitle language codes (default: `en a.en`).
+
+**Examples:**
+
+1.  **Process a single video using default settings:**
+    ```bash
+    python app.py -u "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+    ```
+
+2.  **Process a playlist, saving to a different file and using a different model:**
+    ```bash
+    python app.py -p "https://www.youtube.com/playlist?list=PL..." -o my_summaries.txt -m llama3:latest
+    ```
+
+3.  **Process a single video, preferring Spanish subtitles first:**
+    ```bash
+    python app.py -u "https://www.youtube.com/watch?v=..." -l es en
+    ```
+
+## Output
+
+The script appends the results for each processed video to the specified output file (default: `output.txt`). Each entry follows this format:
 
 ```
-pip install -r requirements.txt
-```
+--- Video Start ---
+Title: [Video Title]
+URL: [Video URL]
 
-3. Run the script with the following command:
-
-```
-python app.py --url "https://www.youtube.com/watch?v=example"
-```
-
-## How It Works
-
-The script takes a YouTube video URL as input and uses the pytube library to extract English subtitles from the video. These subtitles are then sent to a locally running instance of Ollama, which uses an AI model (e.g., Llama 2) to generate a concise summary of the video's key points. The summary is displayed in the terminal for easy reading.
-
-## Example Output
+Key Points:
+- [Generated Key Point 1]
+- [Generated Key Point 2]
+- ...
+--- Video End ---
 
 ```
-python app.py --url https://www.youtube.com/watch?v=vIp_jwHMjIk
---- Starting YouTube Subtitle Summarization ---
-Processing video: 'First Nuclear Fusion Rocket Design Unveiled'
-Available captions:
-KeysView({'a.en': <Caption lang="English (auto-generated)" code="a.en">, 'en-GB': <Caption lang="English (United Kingdom)" code="en-GB">, 'fr': <Caption lang="French" code="fr">, 'de': <Caption lang="German" code="de">, 'pt': <Caption lang="Portuguese" code="pt">, 'es': <Caption lang="Spanish" code="es">})
-Found preferred caption: 'a.en'
-Fetching subtitles for language code: 'a.en'...
-Cleaning subtitles...
-Subtitles extracted and cleaned successfully for 'First Nuclear Fusion Rocket Design Unveiled'.
-Total cleaned subtitle length: 5877 characters.
 
-Generating key points with Ollama...
+## Notes
 
-Sending request to Ollama model 'codeqwen:latest' at http://localhost:11434/api/chat...
-
---- Key Points from the Video ---
-1. The core message is that nuclear fusion could revolutionize space travel and exploration by providing a propulsion system that can get us to Mars or other distant planets quickly, without the need for chemical rockets or long travel times.
-2. Pulsar Fusion has announced the design of their Sunbird project, which uses dutyium helium fusion for power generation. The thrust generated by this fuel could save time in space missions and help them get to Mars earlier than estimated.
-3. Nuclear thermal propulsion, which involves using a nuclear reactor to heat up a propellant like hydrogen until it gets super hot expands and shoots out at the back to create thrust, has been tinkered with by NASA since the 1960s but is currently in a state of hiatus.
-4. Nuclear electric propulsion, which uses nuclear fishision to generate electricity and then accelerates charged particles and thrust from them, is highly efficient but the thrust is small and can't get us to Mars quickly.
-5. Elon Musk hopes to bring people to Mars by 2026 using nuclear fusion-powered thrusters.
-6. Brilliant offers courses on various topics in science, computer science, and mathematics, including quantum mechanics. It provides interactive visualizations and follow-up questions for each course.
-7. Visit brilliant.org/sabena or scan the QR code to try out everything that Brilliant has to offer for a full 30 days with 20% off the annual premium subscription.
-8. The subtitle also mentions that other people are interested in nuclear fusion as space propulsion technology, but it doesn't mention SpaceX, which is not using nuclear fusion.
-9. It suggests that learning more about the science behind various topics can help improve understanding and confidence in exploring space.
-10. Finally, it highlights Brilliant's educational resources, such as courses on quantum mechanics, that may be beneficial for further exploration of this topic.
---- End of Key Points ---
-```
+*   The quality of the summary depends heavily on the quality of the available subtitles and the capabilities of the chosen Ollama model.
+*   Ensure your Ollama instance is running and accessible at the specified URL.
+*   Some videos may not have subtitles available, or only auto-generated ones. The script attempts to handle this but may fail if no captions are found.
+*   Processing long playlists can take a significant amount of time.

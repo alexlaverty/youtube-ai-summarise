@@ -2,15 +2,20 @@ import argparse
 import requests
 import re
 import sys
+import os # Added for file path operations
 from typing import Tuple, List, Optional, Dict, Any
-from pytubefix import YouTube
+# Import Playlist along with YouTube
+from pytubefix import YouTube, Playlist
 from pprint import pprint
+import time # Added for potential rate limiting/pauses
 
 # --- Configuration ---
-# Makes it easier to change the Ollama endpoint or default model
 DEFAULT_OLLAMA_URL = "http://localhost:11434/api/chat"
 DEFAULT_OLLAMA_MODEL = "codeqwen:latest" # CHANGE THIS to your preferred Ollama model
-DEFAULT_LANG_PREFERENCE = ['en', 'a.en'] # Prioritize manual English ('en'), then auto-generated ('a.en')
+DEFAULT_LANG_PREFERENCE = ['en', 'a.en']
+DEFAULT_OUTPUT_FILE = "output.txt"
+# Optional: Add a small delay between processing videos in a playlist
+PLAYLIST_VIDEO_DELAY_SECONDS = 1
 
 # --- Helper Functions ---
 
@@ -50,52 +55,60 @@ def extract_subtitles(youtube_url: str, lang_preference: List[str] = DEFAULT_LAN
         RuntimeError: If there's an issue downloading or processing.
     """
     try:
-        yt = YouTube(youtube_url)
-        video_title = yt.title
-        print(f"Processing video: '{video_title}'")
-        print("Available captions:")
-        pprint(yt.captions.keys()) # Show available language codes
+        # Adding a check to ensure pytubefix doesn't hang on invalid URLs sometimes
+        # Note: This might add a small overhead but increases robustness
+        try:
+            yt = YouTube(youtube_url)
+            # Accessing title early forces connection/validation
+            video_title = yt.title
+        except Exception as init_err:
+             raise RuntimeError(f"Failed to initialize YouTube object for {youtube_url}. It might be invalid, private, or unavailable. Error: {init_err}")
+
+        print(f"Processing video: '{video_title}' ({youtube_url})")
+        # Optional: Reduce verbosity for playlist processing
+        # print("Available captions:")
+        # pprint(yt.captions.keys())
 
         caption_to_fetch = None
+        selected_lang_code = None
         for lang_code in lang_preference:
             caption = yt.captions.get(lang_code)
             if caption:
-                print(f"Found preferred caption: '{lang_code}'")
+                # print(f"Found preferred caption: '{lang_code}'")
                 caption_to_fetch = caption
-                break # Stop searching once a preferred caption is found
+                selected_lang_code = lang_code
+                break
 
         if not caption_to_fetch:
-            # If no preferred captions found, try getting the first available one as a fallback
             if yt.captions:
                 fallback_caption = list(yt.captions.values())[0]
-                print(f"Warning: Preferred languages not found. Falling back to: '{fallback_caption.code}'")
+                print(f"Warning: Preferred languages {lang_preference} not found for '{video_title}'. Falling back to: '{fallback_caption.code}'")
                 caption_to_fetch = fallback_caption
+                selected_lang_code = fallback_caption.code
             else:
-                raise ValueError("No subtitles available for this video in any language.")
+                raise ValueError(f"No subtitles available for video '{video_title}' ({youtube_url}).")
 
-        print(f"Fetching subtitles for language code: '{caption_to_fetch.code}'...")
-        # generate_srt_captions() returns a string formatted in SRT
+        # print(f"Fetching subtitles for language code: '{selected_lang_code}'...")
         raw_subtitles_srt = caption_to_fetch.generate_srt_captions()
 
         if not raw_subtitles_srt:
-             raise ValueError(f"Subtitle generation for '{caption_to_fetch.code}' returned empty.")
+             raise ValueError(f"Subtitle generation for '{selected_lang_code}' returned empty for video '{video_title}'.")
 
-        print("Cleaning subtitles...")
+        # print("Cleaning subtitles...")
         cleaned_subtitles = clean_subtitle_text(raw_subtitles_srt)
 
         if not cleaned_subtitles:
-            raise ValueError("Subtitles were empty after cleaning.")
-
-        # Optional: Print a snippet of cleaned subtitles for verification
-        # print("\n--- Cleaned Subtitle Snippet ---")
-        # print(cleaned_subtitles[:500] + "...")
-        # print("--- End Snippet ---\n")
+            raise ValueError(f"Subtitles were empty after cleaning for video '{video_title}'.")
 
         return video_title, cleaned_subtitles
 
     except Exception as e:
-        # Catch specific pytube/network errors if needed, otherwise generalize
-        raise RuntimeError(f"Failed to extract or clean subtitles from {youtube_url}: {e}")
+        # Re-raise specific errors or generalize
+        if isinstance(e, (ValueError, RuntimeError)):
+             raise e # Pass through our specific errors
+        else:
+             # Catch other potential pytube/network errors
+             raise RuntimeError(f"Failed to extract/clean subtitles from {youtube_url}: {e}")
 
 
 def generate_key_points_with_ollama(
@@ -106,20 +119,25 @@ def generate_key_points_with_ollama(
     ) -> str:
     """
     Sends cleaned subtitles to a local Ollama instance to generate key points.
-
-    Args:
-        subtitles: The cleaned subtitle text.
-        video_title: The title of the YouTube video.
-        model_name: The name of the Ollama model to use.
-        ollama_url: The URL of the Ollama API endpoint.
-
-    Returns:
-        A string containing the key points generated by the model.
-
-    Raises:
-        RuntimeError: If communication with Ollama fails or the API returns an error.
+    (Prompt remains the same as before, ensure it meets your needs)
     """
     try:
+        # system_prompt = (
+        #     "You are an expert assistant specialized in analyzing video transcripts. "
+        #     "Your task is to identify and list the main key points discussed in a video, "
+        #     "based *only* on the provided subtitles transcript. "
+        #     "Format the output as a concise, easy-to-read bulleted list. Ensure each point is distinct and informative. Provide at least 10 key points"
+        # )
+        # user_prompt = (
+        #     f"I have the subtitles from a YouTube video titled \"{video_title}\". "
+        #     "I don't have time to watch the video. Please analyze the following subtitle text "
+        #     "and provide a bulleted list of the key points or main topics discussed. "
+        #     "Focus on the core message and important information presented.\n\n"
+        #     "--- Subtitle Transcript ---\n"
+        #     f"{subtitles}\n"
+        #     "--- End Transcript ---\n\n"
+        #     "Key points:"
+        # )
         # --- Optimized Prompt ---
         system_prompt = (
             "You are an expert assistant specialized in analyzing video transcripts. "
@@ -131,13 +149,12 @@ def generate_key_points_with_ollama(
             f"I have the subtitles from a YouTube video titled \"{video_title}\". "
             "I don't have time to watch the video. Please analyze the following subtitle text "
             "and provide a bulleted list of the key points or main topics discussed. "
-            "Focus on the core message and important information presented. Please return at least 10 points.\n\n"
+            "Focus on the core message and important information presented. Provide at least 10 key points from the subtitles.\n\n"
             "--- Subtitle Transcript ---\n"
             f"{subtitles}\n"
             "--- End Transcript ---\n\n"
             "Key points:"
         )
-
         payload: Dict[str, Any] = {
             "model": model_name,
             "messages": [
@@ -145,108 +162,169 @@ def generate_key_points_with_ollama(
                 {"role": "user", "content": user_prompt}
             ],
             "stream": False,
-             # Optional: Add parameters like temperature if needed
-             # "options": {
-             #    "temperature": 0.7
-             # }
+             # "options": { "temperature": 0.7 } # Optional parameters
         }
 
-        print(f"\nSending request to Ollama model '{model_name}' at {ollama_url}...")
-        # Optional: Print payload for debugging (can be very long with subtitles)
-        # print("Payload (excluding full subtitles):")
-        # pprint({k: v if k != 'messages' else '[Messages with subtitles hidden]' for k, v in payload.items()})
-
+        print(f"Sending request to Ollama model '{model_name}' for '{video_title}'...")
 
         headers = {"Content-Type": "application/json"}
         response = requests.post(ollama_url, json=payload, headers=headers)
-        response.raise_for_status()  # Raise an HTTPError for bad responses (4xx or 5xx)
+        response.raise_for_status()
 
         data = response.json()
 
-        # Standard Ollama chat response structure
         if "message" in data and "content" in data["message"]:
             key_points = data["message"]["content"].strip()
             if not key_points:
                  return "Ollama returned an empty response."
+            #print(f"Successfully generated key points for '{video_title}'.")
             return key_points
         elif "error" in data:
-             raise RuntimeError(f"Ollama API returned an error: {data['error']}")
+             raise RuntimeError(f"Ollama API returned an error for '{video_title}': {data['error']}")
         else:
-            # Fallback if the structure is unexpected
-            print("Warning: Unexpected response structure from Ollama:")
+            print(f"Warning: Unexpected response structure from Ollama for '{video_title}':")
             pprint(data)
-            return data.get("response", "No summary content found in response.") # Handle older /api/generate format just in case
+            return data.get("response", "No summary content found in response.")
 
     except requests.exceptions.RequestException as e:
-        raise RuntimeError(f"Network error connecting to Ollama at {ollama_url}: {e}")
+        raise RuntimeError(f"Network error connecting to Ollama at {ollama_url} for '{video_title}': {e}")
     except Exception as e:
-        # Catch other potential errors (JSON decoding, etc.)
-        raise RuntimeError(f"Failed to generate key points using Ollama: {e}")
+        raise RuntimeError(f"Failed to generate key points using Ollama for '{video_title}': {e}")
+
+def save_output(filepath: str, title: str, key_points: str, url: str):
+    """Appends the video title, URL, and key points to the specified file."""
+    try:
+        with open(filepath, 'a', encoding='utf-8') as f:
+            f.write(f"--- Video Start ---\n")
+            f.write(f"Title: {title}\n")
+            f.write(f"URL: {url}\n\n")
+            f.write("Key Points:\n")
+            f.write(f"{key_points}\n")
+            f.write(f"--- Video End ---\n\n")
+        print(f"Saved key points for '{title}' to {filepath}")
+    except IOError as e:
+        print(f"Error: Failed to write to output file {filepath}: {e}", file=sys.stderr)
+
 
 # --- Main Execution ---
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Extract YouTube subtitles and generate key points using Ollama.",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter # Shows default values in help
+        description="Extract YouTube subtitles and generate key points using Ollama for a single video or a playlist.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
-    parser.add_argument("-u", "--url", required=True, help="YouTube video URL")
+    # Group for mutually exclusive arguments: either --url or --playlist
+    input_group = parser.add_mutually_exclusive_group(required=True)
+    input_group.add_argument("-u", "--url", help="URL of a single YouTube video.")
+    input_group.add_argument("-p", "--playlist", help="URL of a YouTube playlist.")
+
+    parser.add_argument(
+        "-o", "--output-file",
+        default=DEFAULT_OUTPUT_FILE,
+        help="File path to save the output."
+    )
     parser.add_argument(
         "-m", "--model",
         default=DEFAULT_OLLAMA_MODEL,
-        help="Name of the Ollama model to use"
+        help="Name of the Ollama model to use."
     )
     parser.add_argument(
         "--ollama-url",
         default=DEFAULT_OLLAMA_URL,
-        help="URL for the Ollama API endpoint"
+        help="URL for the Ollama API endpoint."
     )
     parser.add_argument(
         "-l", "--lang",
-        nargs='+', # Allows multiple language codes
+        nargs='+',
         default=DEFAULT_LANG_PREFERENCE,
-        help="Preferred language codes for subtitles, in order of priority (e.g., 'en' 'a.en')"
+        help="Preferred language codes for subtitles, in order of priority."
     )
+
     args = parser.parse_args()
 
-    try:
-        print("--- Starting YouTube Subtitle Summarization ---")
+    urls_to_process = []
+    is_playlist = False
 
-        # 1. Extract and Clean Subtitles
-        video_title, subtitles = extract_subtitles(args.url, lang_preference=args.lang)
-        print(f"Subtitles extracted and cleaned successfully for '{video_title}'.")
-        print(f"Total cleaned subtitle length: {len(subtitles)} characters.")
-
-        # Check if subtitles seem reasonably long
-        if len(subtitles) < 50: # Arbitrary short threshold
-             print("Warning: The extracted subtitles seem very short. The summary might be limited.")
-             if len(subtitles) == 0:
-                 print("Error: Subtitles are empty after cleaning. Cannot proceed.")
+    # --- Determine Video URLs ---
+    if args.playlist:
+        is_playlist = True
+        try:
+            print(f"Fetching playlist information from: {args.playlist}")
+            pl = Playlist(args.playlist)
+            # Accessing title forces loading playlist metadata
+            print(f"Processing playlist: '{pl.title}' ({len(pl.video_urls)} videos)")
+            if not pl.video_urls:
+                 print(f"Error: Playlist URL {args.playlist} seems valid but contains no videos.", file=sys.stderr)
                  sys.exit(1)
-
-
-        # 2. Generate Key Points with Ollama
-        print("\nGenerating key points with Ollama...")
-        key_points = generate_key_points_with_ollama(
-            subtitles=subtitles,
-            video_title=video_title,
-            model_name=args.model,
-            ollama_url=args.ollama_url
-        )
-
-        # 3. Print Results
-        print("\n--- Key Points from the Video ---")
-        print(key_points)
-        print("--- End of Key Points ---")
-
-    except (ValueError, RuntimeError) as e:
-        # Catch specific errors raised by our functions
-        print(f"\nError: {e}", file=sys.stderr)
+            urls_to_process = list(pl.video_urls) # Get all video URLs
+        except Exception as e:
+            print(f"Error: Failed to process playlist URL {args.playlist}: {e}", file=sys.stderr)
+            sys.exit(1)
+    elif args.url:
+        urls_to_process.append(args.url)
+    else:
+        # This case should not happen due to the mutually exclusive group, but added for safety
+        print("Error: You must provide either --url or --playlist.", file=sys.stderr)
         sys.exit(1)
-    except Exception as e:
-        # Catch any other unexpected errors
-        print(f"\nAn unexpected error occurred: {e}", file=sys.stderr)
-        sys.exit(1)
+
+    print(f"\n--- Starting YouTube Subtitle Summarization ---")
+    print(f"Output will be saved to: {args.output_file}")
+    print(f"Using Ollama model: {args.model} at {args.ollama_url}")
+    print(f"Preferred subtitle languages: {args.lang}")
+
+    total_videos = len(urls_to_process)
+    processed_count = 0
+    error_count = 0
+
+    # --- Process Each Video URL ---
+    for i, video_url in enumerate(urls_to_process):
+        print(f"\n[{i+1}/{total_videos}] Processing URL: {video_url}")
+        try:
+            # 1. Extract and Clean Subtitles
+            video_title, subtitles = extract_subtitles(video_url, lang_preference=args.lang)
+            # print(f"Subtitles extracted and cleaned successfully for '{video_title}'.")
+            # print(f"Total cleaned subtitle length: {len(subtitles)} characters.")
+
+            if len(subtitles) < 50:
+                print(f"Warning: Cleaned subtitles for '{video_title}' are very short ({len(subtitles)} chars). Summary might be limited.")
+                if len(subtitles) == 0:
+                    raise ValueError("Subtitles are empty after cleaning. Cannot proceed.")
+
+            # 2. Generate Key Points with Ollama
+            key_points = generate_key_points_with_ollama(
+                subtitles=subtitles,
+                video_title=video_title,
+                model_name=args.model,
+                ollama_url=args.ollama_url
+            )
+
+            # 3. Save Results to File
+            save_output(args.output_file, video_title, key_points, video_url)
+            processed_count += 1
+
+        except (ValueError, RuntimeError) as e:
+            # Catch errors specific to subtitle extraction or Ollama processing for *this* video
+            print(f"Error processing video {video_url}: {e}", file=sys.stderr)
+            error_count += 1
+        except Exception as e:
+            # Catch any other unexpected errors for *this* video
+            print(f"An unexpected error occurred processing video {video_url}: {e}", file=sys.stderr)
+            error_count += 1
+        finally:
+            # Optional: Add a delay between videos in a playlist
+            if is_playlist and i < total_videos - 1: # Don't sleep after the last video
+                 print(f"Waiting for {PLAYLIST_VIDEO_DELAY_SECONDS}s before next video...")
+                 time.sleep(PLAYLIST_VIDEO_DELAY_SECONDS)
+
+
+    print("\n--- Processing Complete ---")
+    print(f"Total videos attempted: {total_videos}")
+    print(f"Successfully processed and saved: {processed_count}")
+    print(f"Errors encountered: {error_count}")
+    if error_count > 0:
+        print(f"Check logs or console output for details on errors.")
+    print(f"Output saved in: {args.output_file}")
+
 
 if __name__ == "__main__":
     main()
