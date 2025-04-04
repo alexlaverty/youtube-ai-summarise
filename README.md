@@ -105,22 +105,22 @@ Ensure your Ollama instance is running if you intend to use the `ollama` engine.
 
 1.  **Process a single video using the default engine (from `config.yml`):**
     ```bash
-    python app.py -u "[https://www.youtube.com/watch?v=dQw4w9WgXcQ](https://www.youtube.com/watch?v=dQw4w9WgXcQ)"
+    python app.py -u "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
     ```
 
 2.  **Process a playlist using the Gemini engine (API key must be in `config.yml` or provided):**
     ```bash
-    python app.py --engine gemini -p "[https://www.youtube.com/playlist?list=PL](https://www.youtube.com/playlist?list=PL)..."
+    python app.py --engine gemini -p "https://www.youtube.com/playlist?list=PL..."
     ```
 
 3.  **Process a playlist using Gemini, overriding the API key and output file:**
     ```bash
-    python app.py --engine gemini --gemini-api-key "AIzaSy..." -p "[https://www.youtube.com/playlist?list=PL](https://www.youtube.com/playlist?list=PL)..." -o gemini_summaries.txt
+    python app.py --engine gemini --gemini-api-key "AIzaSy..." -p "https://www.youtube.com/playlist?list=PL..." -o gemini_summaries.txt
     ```
 
 4.  **Process a single video using Ollama with a specific model, preferring Spanish subtitles:**
     ```bash
-    python app.py --engine ollama -m mistral:latest -u "[https://www.youtube.com/watch?v=](https://www.youtube.com/watch?v=)..." -l es en
+    python app.py --engine ollama -m mistral:latest -u "https://www.youtube.com/watch?v=..." -l es en
     ```
 
 ## Output
