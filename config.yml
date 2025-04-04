@@ -1,0 +1,12 @@
+# --- Default Configuration ---
+ollama_url: "http://localhost:11434/api/chat"
+ollama_model: "codeqwen:latest" # Change this to your preferred Ollama model
+language_preference:
+  - "en"
+  - "a.en"
+output_file: "output.txt"
+playlist_video_delay_seconds: 1
+engine: "ollama" # ollama or gemini
+
+# --- API Keys (Keep these secret!) ---
+gemini_api_key: "" # Leave empty if you don't want to use Gemini

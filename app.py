@@ -2,20 +2,35 @@ import argparse
 import requests
 import re
 import sys
-import os # Added for file path operations
+import os
 from typing import Tuple, List, Optional, Dict, Any
-# Import Playlist along with YouTube
 from pytubefix import YouTube, Playlist
 from pprint import pprint
-import time # Added for potential rate limiting/pauses
+import time
+import yaml
+import google.generativeai as genai
+
+# --- Load Configuration from YAML ---
+def load_config(filepath="config.yml"):
+    try:
+        with open(filepath, 'r') as f:
+            return yaml.safe_load(f) or {}
+    except FileNotFoundError:
+        print(f"Warning: Configuration file '{filepath}' not found. Using default values.")
+        return {}
+    except yaml.YAMLError as e:
+        print(f"Error parsing configuration file '{filepath}': {e}. Using default values.")
+        return {}
+
+config = load_config()
 
 # --- Configuration ---
-DEFAULT_OLLAMA_URL = "http://localhost:11434/api/chat"
-DEFAULT_OLLAMA_MODEL = "codeqwen:latest" # CHANGE THIS to your preferred Ollama model
-DEFAULT_LANG_PREFERENCE = ['en', 'a.en']
-DEFAULT_OUTPUT_FILE = "output.txt"
-# Optional: Add a small delay between processing videos in a playlist
-PLAYLIST_VIDEO_DELAY_SECONDS = 1
+DEFAULT_OLLAMA_URL = config.get("ollama_url", "http://localhost:11434/api/chat")
+DEFAULT_OLLAMA_MODEL = config.get("ollama_model", "codeqwen:latest")
+DEFAULT_LANG_PREFERENCE = config.get("language_preference", ['en', 'a.en'])
+DEFAULT_OUTPUT_FILE = config.get("output_file", "output.txt")
+PLAYLIST_VIDEO_DELAY_SECONDS = config.get("playlist_video_delay_seconds", 1)
+GEMINI_API_KEY = config.get("gemini_api_key", "")
 
 # --- Helper Functions ---
 
@@ -25,15 +40,10 @@ def clean_subtitle_text(srt_text: str) -> str:
     and common annotations like [Music] or [Applause]. Joins lines
     into a single coherent block of text.
     """
-    # Remove sequence numbers
     cleaned = re.sub(r'^\d+\s*$', '', srt_text, flags=re.MULTILINE)
-    # Remove timestamps
     cleaned = re.sub(r'\d{2}:\d{2}:\d{2},\d{3} --> \d{2}:\d{2}:\d{2},\d{3}\s*', '', cleaned, flags=re.MULTILINE)
-    # Remove common annotations (e.g., [Music], [Applause], (Laughter)) - case insensitive
     cleaned = re.sub(r'\[.*?\]|\(.*?\)', '', cleaned, flags=re.IGNORECASE)
-    # Remove HTML tags just in case (like <i>, <b>)
     cleaned = re.sub(r'<.*?>', '', cleaned)
-    # Consolidate multiple newlines/spaces into single spaces
     cleaned = re.sub(r'\s+', ' ', cleaned).strip()
     return cleaned
 
@@ -55,26 +65,19 @@ def extract_subtitles(youtube_url: str, lang_preference: List[str] = DEFAULT_LAN
         RuntimeError: If there's an issue downloading or processing.
     """
     try:
-        # Adding a check to ensure pytubefix doesn't hang on invalid URLs sometimes
-        # Note: This might add a small overhead but increases robustness
         try:
             yt = YouTube(youtube_url)
-            # Accessing title early forces connection/validation
             video_title = yt.title
         except Exception as init_err:
-             raise RuntimeError(f"Failed to initialize YouTube object for {youtube_url}. It might be invalid, private, or unavailable. Error: {init_err}")
+            raise RuntimeError(f"Failed to initialize YouTube object for {youtube_url}. It might be invalid, private, or unavailable. Error: {init_err}")
 
         print(f"Processing video: '{video_title}' ({youtube_url})")
-        # Optional: Reduce verbosity for playlist processing
-        # print("Available captions:")
-        # pprint(yt.captions.keys())
 
         caption_to_fetch = None
         selected_lang_code = None
         for lang_code in lang_preference:
             caption = yt.captions.get(lang_code)
             if caption:
-                # print(f"Found preferred caption: '{lang_code}'")
                 caption_to_fetch = caption
                 selected_lang_code = lang_code
                 break
@@ -88,13 +91,11 @@ def extract_subtitles(youtube_url: str, lang_preference: List[str] = DEFAULT_LAN
             else:
                 raise ValueError(f"No subtitles available for video '{video_title}' ({youtube_url}).")
 
-        # print(f"Fetching subtitles for language code: '{selected_lang_code}'...")
         raw_subtitles_srt = caption_to_fetch.generate_srt_captions()
 
         if not raw_subtitles_srt:
-             raise ValueError(f"Subtitle generation for '{selected_lang_code}' returned empty for video '{video_title}'.")
+            raise ValueError(f"Subtitle generation for '{selected_lang_code}' returned empty for video '{video_title}'.")
 
-        # print("Cleaning subtitles...")
         cleaned_subtitles = clean_subtitle_text(raw_subtitles_srt)
 
         if not cleaned_subtitles:
@@ -103,12 +104,10 @@ def extract_subtitles(youtube_url: str, lang_preference: List[str] = DEFAULT_LAN
         return video_title, cleaned_subtitles
 
     except Exception as e:
-        # Re-raise specific errors or generalize
         if isinstance(e, (ValueError, RuntimeError)):
-             raise e # Pass through our specific errors
+            raise e
         else:
-             # Catch other potential pytube/network errors
-             raise RuntimeError(f"Failed to extract/clean subtitles from {youtube_url}: {e}")
+            raise RuntimeError(f"Failed to extract/clean subtitles from {youtube_url}: {e}")
 
 
 def generate_key_points_with_ollama(
@@ -119,26 +118,8 @@ def generate_key_points_with_ollama(
     ) -> str:
     """
     Sends cleaned subtitles to a local Ollama instance to generate key points.
-    (Prompt remains the same as before, ensure it meets your needs)
     """
     try:
-        # system_prompt = (
-        #     "You are an expert assistant specialized in analyzing video transcripts. "
-        #     "Your task is to identify and list the main key points discussed in a video, "
-        #     "based *only* on the provided subtitles transcript. "
-        #     "Format the output as a concise, easy-to-read bulleted list. Ensure each point is distinct and informative. Provide at least 10 key points"
-        # )
-        # user_prompt = (
-        #     f"I have the subtitles from a YouTube video titled \"{video_title}\". "
-        #     "I don't have time to watch the video. Please analyze the following subtitle text "
-        #     "and provide a bulleted list of the key points or main topics discussed. "
-        #     "Focus on the core message and important information presented.\n\n"
-        #     "--- Subtitle Transcript ---\n"
-        #     f"{subtitles}\n"
-        #     "--- End Transcript ---\n\n"
-        #     "Key points:"
-        # )
-        # --- Optimized Prompt ---
         system_prompt = (
             "You are an expert assistant specialized in analyzing video transcripts. "
             "Your task is to identify and list the main key points discussed in a video, "
@@ -149,7 +130,9 @@ def generate_key_points_with_ollama(
             f"I have the subtitles from a YouTube video titled \"{video_title}\". "
             "I don't have time to watch the video. Please analyze the following subtitle text "
             "and provide a bulleted list of the key points or main topics discussed. "
-            "Focus on the core message and important information presented. Provide at least 10 key points from the subtitles.\n\n"
+            "Focus on the core message and important information presented. "
+            "If the title is a question attempt to answer the question based off the provided subtitle text. "
+            "Provide at least 10 to 50 key points from the subtitles.\n\n"
             "--- Subtitle Transcript ---\n"
             f"{subtitles}\n"
             "--- End Transcript ---\n\n"
@@ -162,7 +145,7 @@ def generate_key_points_with_ollama(
                 {"role": "user", "content": user_prompt}
             ],
             "stream": False,
-             # "options": { "temperature": 0.7 } # Optional parameters
+            # "options": { "temperature": 0.7 } # Optional parameters
         }
 
         print(f"Sending request to Ollama model '{model_name}' for '{video_title}'...")
@@ -179,15 +162,13 @@ def generate_key_points_with_ollama(
                 return "Ollama returned an empty response."
 
             print(f"Successfully generated key points for '{video_title}':\n")
-
-            # Split the key points into lines and print each as a formatted list
             for i, line in enumerate(key_points.split("\n"), start=1):
-                if line.strip():  # Skip empty lines
+                if line.strip():
                     print(f"{line.strip()}")
 
             return key_points
         elif "error" in data:
-             raise RuntimeError(f"Ollama API returned an error for '{video_title}': {data['error']}")
+            raise RuntimeError(f"Ollama API returned an error for '{video_title}': {data['error']}")
         else:
             print(f"Warning: Unexpected response structure from Ollama for '{video_title}':")
             pprint(data)
@@ -197,6 +178,69 @@ def generate_key_points_with_ollama(
         raise RuntimeError(f"Network error connecting to Ollama at {ollama_url} for '{video_title}': {e}")
     except Exception as e:
         raise RuntimeError(f"Failed to generate key points using Ollama for '{video_title}': {e}")
+
+
+def generate_summary_with_gemini(subtitles: str, video_title: str, api_key: str) -> str:
+    """
+    Generates a detailed, nested list of key points from the subtitles using the Google Gemini API.
+    """
+    if not api_key:
+        raise ValueError("Gemini API key is not provided in the configuration.")
+
+    try:
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel('gemini-1.5-pro-latest') # Or 'gemini-1.0-pro'
+
+        # --- Start: Updated Prompt ---
+        prompt = f"""You are a highly detailed analysis assistant. Your task is to meticulously analyze the provided video transcript and extract the specific information discussed. Do not provide a general summary. Instead, identify the main topics and for each topic, list the key details, arguments, examples, or facts presented in the transcript.
+
+Use *only* the information present in the transcript below.
+
+Video Title: "{video_title}"
+
+--- Subtitle Transcript ---
+{subtitles}
+--- End Transcript ---
+
+Please structure your output as a nested bulleted list. Each top-level bullet should represent a main topic discussed. Under each main topic, use indented bullets (like '-' or '*') to list the specific points, details, arguments, examples, conclusions, or statements made about that topic in the video. Be specific about *what was said*.
+
+Example Structure:
+* Main Topic 1 discussed in the video
+    - Specific detail 'a' mentioned about Topic 1 (e.g., "They mentioned the sky is blue").
+    - Specific detail 'b' mentioned about Topic 1 (e.g., "An example given was X, leading to conclusion Y").
+* Main Topic 2 discussed in the video
+    - Specific argument 'x' presented regarding Topic 2 (e.g., "The speaker argued that...").
+    - Specific fact 'y' shared about Topic 2 (e.g., "It was stated that the project started on Z date").
+
+Detailed Key Points Extraction:"""
+        # --- End: Updated Prompt ---
+
+        print(f"Sending request to Gemini API ({model.model_name}) for '{video_title}' to extract detailed points...")
+        response = model.generate_content(prompt)
+
+        if not response.parts:
+             finish_reason = response.prompt_feedback.block_reason if response.prompt_feedback else "Unknown"
+             if finish_reason != "SAFETY":
+                 print(f"Warning: Gemini response for '{video_title}' was empty or blocked. Finish Reason: {finish_reason}", file=sys.stderr)
+                 return f"Gemini API did not return details. (Reason: {finish_reason})"
+             else:
+                 print(f"Warning: Gemini response for '{video_title}' was blocked due to safety settings.", file=sys.stderr)
+                 return "Gemini API did not return details due to safety settings."
+
+        detailed_points = response.text.strip()
+
+        if detailed_points:
+            print(f"Successfully extracted detailed points for '{video_title}' using Gemini:\n{detailed_points}\n")
+            return detailed_points
+        else:
+            print(f"Warning: Gemini API returned empty details string for '{video_title}'.")
+            return "Gemini API returned empty details."
+
+    except google.api_core.exceptions.NotFound as e:
+         raise RuntimeError(f"Failed to generate details using Gemini API for '{video_title}': Model not found or API key issue. Check model name and API key. Original error: {e}")
+    except Exception as e:
+        print(f"Detailed Gemini Error Traceback for '{video_title}':\n{traceback.format_exc()}", file=sys.stderr)
+        raise RuntimeError(f"Failed to generate details using Gemini API for '{video_title}': An unexpected error occurred: {e}")
 
 def save_output(filepath: str, title: str, key_points: str, url: str):
     """Appends the video title, URL, and key points to the specified file."""
@@ -217,10 +261,9 @@ def save_output(filepath: str, title: str, key_points: str, url: str):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Extract YouTube subtitles and generate key points using Ollama for a single video or a playlist.",
+        description="Extract YouTube subtitles and generate key points/summaries using Ollama or Gemini for a single video or a playlist.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
-    # Group for mutually exclusive arguments: either --url or --playlist
     input_group = parser.add_mutually_exclusive_group(required=True)
     input_group.add_argument("-u", "--url", help="URL of a single YouTube video.")
     input_group.add_argument("-p", "--playlist", help="URL of a YouTube playlist.")
@@ -233,12 +276,12 @@ def main():
     parser.add_argument(
         "-m", "--model",
         default=DEFAULT_OLLAMA_MODEL,
-        help="Name of the Ollama model to use."
+        help="Name of the Ollama model to use (if engine is ollama)."
     )
     parser.add_argument(
         "--ollama-url",
         default=DEFAULT_OLLAMA_URL,
-        help="URL for the Ollama API endpoint."
+        help="URL for the Ollama API endpoint (if engine is ollama)."
     )
     parser.add_argument(
         "-l", "--lang",
@@ -246,82 +289,99 @@ def main():
         default=DEFAULT_LANG_PREFERENCE,
         help="Preferred language codes for subtitles, in order of priority."
     )
+    parser.add_argument(
+        "--engine",
+        choices=['ollama', 'gemini'],
+        help="Override the summarization engine specified in config.yml."
+    )
+    parser.add_argument(
+        "--gemini-api-key",
+        help="Optional: Your Google Gemini API key. If not provided, the key from config.yml will be used (if engine is Gemini)."
+    )
 
     args = parser.parse_args()
+
+    # Determine the engine to use, prioritizing the command-line argument
+    engine_to_use = args.engine if args.engine else config.get("engine", "ollama")
 
     urls_to_process = []
     is_playlist = False
 
-    # --- Determine Video URLs ---
     if args.playlist:
         is_playlist = True
         try:
             print(f"Fetching playlist information from: {args.playlist}")
             pl = Playlist(args.playlist)
-            # Accessing title forces loading playlist metadata
             print(f"Processing playlist: '{pl.title}' ({len(pl.video_urls)} videos)")
             if not pl.video_urls:
-                 print(f"Error: Playlist URL {args.playlist} seems valid but contains no videos.", file=sys.stderr)
-                 sys.exit(1)
-            urls_to_process = list(pl.video_urls) # Get all video URLs
+                print(f"Error: Playlist URL {args.playlist} seems valid but contains no videos.", file=sys.stderr)
+                sys.exit(1)
+            urls_to_process = list(pl.video_urls)
         except Exception as e:
             print(f"Error: Failed to process playlist URL {args.playlist}: {e}", file=sys.stderr)
             sys.exit(1)
     elif args.url:
         urls_to_process.append(args.url)
     else:
-        # This case should not happen due to the mutually exclusive group, but added for safety
         print("Error: You must provide either --url or --playlist.", file=sys.stderr)
         sys.exit(1)
 
     print(f"\n--- Starting YouTube Subtitle Summarization ---")
     print(f"Output will be saved to: {args.output_file}")
-    print(f"Using Ollama model: {args.model} at {args.ollama_url}")
+    print(f"Using summarization engine: {engine_to_use}")
+    if engine_to_use == 'ollama':
+        print(f"Using Ollama model: {args.model} at {args.ollama_url}")
+    elif engine_to_use == 'gemini':
+        print(f"Using Gemini API.")
     print(f"Preferred subtitle languages: {args.lang}")
 
     total_videos = len(urls_to_process)
     processed_count = 0
     error_count = 0
 
-    # --- Process Each Video URL ---
     for i, video_url in enumerate(urls_to_process):
         print(f"\n[{i+1}/{total_videos}] Processing URL: {video_url}")
         try:
-            # 1. Extract and Clean Subtitles
             video_title, subtitles = extract_subtitles(video_url, lang_preference=args.lang)
-            # print(f"Subtitles extracted and cleaned successfully for '{video_title}'.")
-            # print(f"Total cleaned subtitle length: {len(subtitles)} characters.")
 
             if len(subtitles) < 50:
                 print(f"Warning: Cleaned subtitles for '{video_title}' are very short ({len(subtitles)} chars). Summary might be limited.")
                 if len(subtitles) == 0:
                     raise ValueError("Subtitles are empty after cleaning. Cannot proceed.")
 
-            # 2. Generate Key Points with Ollama
-            key_points = generate_key_points_with_ollama(
-                subtitles=subtitles,
-                video_title=video_title,
-                model_name=args.model,
-                ollama_url=args.ollama_url
-            )
+            summary_text = ""
+            engine_used = engine_to_use
 
-            # 3. Save Results to File
-            save_output(args.output_file, video_title, key_points, video_url)
+            if engine_to_use == 'ollama':
+                summary_text = generate_key_points_with_ollama(
+                    subtitles=subtitles,
+                    video_title=video_title,
+                    model_name=args.model,
+                    ollama_url=args.ollama_url
+                )
+            elif engine_to_use == 'gemini':
+                gemini_key_to_use = args.gemini_api_key if args.gemini_api_key else GEMINI_API_KEY
+                if not gemini_key_to_use:
+                    raise ValueError("Gemini API key is required when using the Gemini engine. Provide it via --gemini-api-key or in config.yml.")
+                summary_text = generate_summary_with_gemini(
+                    subtitles=subtitles,
+                    video_title=video_title,
+                    api_key=gemini_key_to_use
+                )
+
+            save_output(args.output_file, video_title, summary_text, video_url, engine=engine_used)
             processed_count += 1
 
         except (ValueError, RuntimeError) as e:
-            # Catch errors specific to subtitle extraction or Ollama processing for *this* video
             print(f"Error processing video {video_url}: {e}", file=sys.stderr)
             error_count += 1
         except Exception as e:
-            # Catch any other unexpected errors for *this* video
             print(f"An unexpected error occurred processing video {video_url}: {e}", file=sys.stderr)
             error_count += 1
         finally:
-            # Optional: Add a delay between videos in a playlist
-            if is_playlist and i < total_videos - 1: # Don't sleep after the last video
-                 print(f"Waiting for {PLAYLIST_VIDEO_DELAY_SECONDS}s before next video...")
-                 time.sleep(PLAYLIST_VIDEO_DELAY_SECONDS)
+            if is_playlist and i < total_videos - 1:
+                print(f"Waiting for {PLAYLIST_VIDEO_DELAY_SECONDS}s before next video...")
+                time.sleep(PLAYLIST_VIDEO_DELAY_SECONDS)
 
 
     print("\n--- Processing Complete ---")
